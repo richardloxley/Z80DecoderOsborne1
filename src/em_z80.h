@@ -4,9 +4,9 @@
 // Change bus cycle ordering of EX (SP),HL
 // #define T80
 
-//#define MEMORY_MODELLING
+#define MEMORY_MODELLING
 
-//#define MEMORY_DEBUG
+#define MEMORY_DEBUG
 
 #define False 0
 #define True  1
@@ -62,9 +62,11 @@ int z80_halted();
 #ifdef MEMORY_MODELLING
 void z80_clear_mem_log();
 void z80_dump_mem_log();
+void memory_read(int data, int ea);
 #else
 #define z80_clear_mem_log(...)
 #define z80_dump_mem_log(...)
+#define memory_read(...)
 #endif
 
 #endif

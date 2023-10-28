@@ -159,7 +159,16 @@ static int *reg_ptr[] = {
 
 #ifdef MEMORY_MODELLING
 static int memory[0x10000];
+static int memory_osborne_rom_io[0x10000];
+static int memory_osborne_dim_bit[0x10000];
+static int osborne_lower_bank_rom_io_active = 1;
+static int osborne_upper_bank_dim_bit_active = 0;
+#define OSBORNE_LOWER_BANK_ROM_IO_TOP 0x3FFF
+#define OSBORNE_LOWER_BANK_IO_BOTTOM 0x2000
+#define OSBORNE_LOWER_BANK_IO_TOP 0x2FFF
+#define OSBORNE_UPPER_BANK_DIM_BIT_BOTTOM 0xF000
 #endif
+
 
 // ===================================================================
 // Emulation output
@@ -356,6 +365,8 @@ void z80_init(int cpu_type, int default_im) {
 #ifdef MEMORY_MODELLING
    for (int i = 0; i <= 0xffff; i++) {
       memory[i] = -1;
+      memory_osborne_rom_io[i] = -1;
+      memory_osborne_dim_bit[i] = -1;
    }
 #endif
 }
@@ -763,33 +774,160 @@ static void printm(const char* format, ...) {
    }
 }
 
-static void memory_read(int data, int ea) {
-   if (ea >= 0 && ea <= 0xFFFF) {
+static void osborne_bank_switch(int value)
+{
+	// osborne 1 banked memory
+	if (value == 0)
+	{
+		osborne_lower_bank_rom_io_active = 1;
 #ifdef MEMORY_DEBUG
-      printm("RD %04x=%02x", ea, data);
-      failflag |= FAIL_MEMORY;
+		printm("switching to lower bank 2");
+		failflag |= FAIL_MEMORY;
 #endif
-      if (memory[ea] >=0 && memory[ea] != data) {
-         printm("memory modelling failed at %04x: expected %02x, actual %02x", ea, memory[ea], data);
-         failflag |= FAIL_MEMORY;
-      }
-      memory[ea] = data;
-   }
+	}
+	else if (value == 1)
+	{
+		osborne_lower_bank_rom_io_active = 0;
+#ifdef MEMORY_DEBUG
+		printm("switching to lower bank 1");
+		failflag |= FAIL_MEMORY;
+#endif
+	}
+	else if (value == 2)
+	{
+		osborne_upper_bank_dim_bit_active = 1;
+#ifdef MEMORY_DEBUG
+		printm("switching to upper bank 3");
+		failflag |= FAIL_MEMORY;
+#endif
+	}
+	else if (value == 3)
+	{
+		osborne_upper_bank_dim_bit_active = 0;
+#ifdef MEMORY_DEBUG
+		printm("switching to upper bank 1");
+		failflag |= FAIL_MEMORY;
+#endif
+	}
 }
 
-static void memory_write(int data, int ea) {
-   if (ea >= 0 && ea <= 0xffff) {
-      if (data < 0 || data > 255) {
-         printm("memory modelling failed at %04x: illegal write of %02x", ea, data);
-         failflag |= FAIL_MEMORY;
-      } else {
+void memory_read(int data, int ea) {
+	if (ea >= 0 && ea <= 0xFFFF)
+	{
+		int old_value = -1;
+		int bank = 1;
+
+		if (osborne_lower_bank_rom_io_active && ea <= OSBORNE_LOWER_BANK_ROM_IO_TOP)
+		{
+			if (ea >= OSBORNE_LOWER_BANK_IO_BOTTOM && ea <= OSBORNE_LOWER_BANK_IO_TOP)
+			{
+				// memory mapped i/o so old value irrelevant as it's changed by external devices
+				old_value = -1;
+			}
+			else
+			{
+				old_value = memory_osborne_rom_io[ea];
+			}
+			memory_osborne_rom_io[ea] = data;
+			bank = 2;
+		}
+		else if (osborne_upper_bank_dim_bit_active && ea >= OSBORNE_UPPER_BANK_DIM_BIT_BOTTOM)
+		{
+			// upper bank 3 only has bit 7
+			old_value = memory_osborne_dim_bit[ea] & 0x80;
+			data = data & 0x80;
+			memory_osborne_dim_bit[ea] = data;
+			bank = 3;
+		}
+		else
+		{
+			old_value = memory[ea];
+			memory[ea] = data;
+			bank = 1;
+		}
+
 #ifdef MEMORY_DEBUG
-         printm("WR %04x=%02x", ea, data);
-         failflag |= FAIL_MEMORY;
+		printm("RD %d/%04x=%02x", bank, ea, data);
+		failflag |= FAIL_MEMORY;
 #endif
-         memory[ea] = data;
-      }
-   }
+
+		if (old_value >= 0 && old_value != data)
+		{
+			printm("memory modelling failed at %d/%04x: expected %02x, actual %02x", bank, ea, old_value, data);
+			failflag |= FAIL_MEMORY;
+
+			int failed_bits = data ^ old_value;
+			int section = ea / 0x4000;
+			char high_string[9] = "        ";
+			char low_string[9] = "        ";
+			for (int bit = 0; bit < 8; bit++)
+			{
+				if (failed_bits & 1)
+				{
+					if (data & 1)
+					{
+						high_string[bit] = '0' + bit;
+					}
+					else
+					{
+						low_string[bit] = '0' + bit;
+					}
+				}
+				failed_bits >>= 1;
+			}
+
+			fprintf(stderr, "bank %d section %d address %04x failed high bits: %s low bits: %s\n", bank, section, ea, high_string, low_string);
+			printm("bank %d section %d address %04x failed high bits: %s low bits: %s\n", bank, section, ea, high_string, low_string);
+		}
+
+	}
+}
+
+static void memory_write(int data, int ea)
+{
+	if (ea >= 0 && ea <= 0xffff)
+	{
+		if (data < 0 || data > 255)
+		{
+			printm("memory modelling failed at %04x: illegal write of %02x", ea, data);
+			failflag |= FAIL_MEMORY;
+		}
+		else
+		{
+			int bank;
+
+			if (osborne_lower_bank_rom_io_active && ea <= OSBORNE_LOWER_BANK_ROM_IO_TOP)
+			{
+				if (ea >= OSBORNE_LOWER_BANK_IO_BOTTOM && ea <= OSBORNE_LOWER_BANK_IO_TOP)
+				{
+					// writing to memory mapped I/O
+				}
+				else
+				{
+					// writing to ROM!
+					fprintf(stderr, "attempting to write to ROM address %04x\n", ea);
+					printm("attempting to write to ROM address %04x\n", ea);
+					failflag |= FAIL_MEMORY;
+				}
+
+				bank = 2;
+			}
+			else if (osborne_upper_bank_dim_bit_active && ea >= OSBORNE_UPPER_BANK_DIM_BIT_BOTTOM)
+			{
+				memory_osborne_dim_bit[ea] = data;
+				bank = 3;
+			}
+			else
+			{
+				memory[ea] = data;
+				bank = 1;
+			}
+#ifdef MEMORY_DEBUG
+			printm("WR %d/%04x=%02x", bank, ea, data);
+			failflag |= FAIL_MEMORY;
+#endif
+	      }
+	}
 }
 
 static void memory_read16(int data, int ea) {
@@ -829,6 +967,7 @@ static void memory_write_hl_or_idxdisp(int data) {
 
 #else
 
+#define osborne_bank_switch(...)
 #define memory_read(...)
 #define memory_write(...)
 #define memory_read16(...)
@@ -879,6 +1018,9 @@ static void op_interrupt_nmi(InstrType *instr) {
 }
 
 static void op_interrupt_int(InstrType *instr) {
+   // Osborne switches to ROM bank on interrupt - equivalent to OUT (00)
+   osborne_bank_switch(0);
+
    // Clear halted
    halted = 0;
    // Disable interrupts
@@ -2126,6 +2268,9 @@ static void op_in_a_nn(InstrType *instr) {
 }
 
 static void op_out_nn_a(InstrType *instr) {
+   // osborne 1 banked memory
+   osborne_bank_switch(arg_imm);
+
    // Update undocumented memptr register
    // MEMPTR_low = (port + 1) & #FF,  MEMPTR_hi = A
    update_memptr_inc_split(reg_a, arg_imm);
@@ -2172,6 +2317,10 @@ static void op_out_c_r(InstrType *instr) {
       }
       *reg = arg_write;
    }
+
+   // osborne 1 banked memory
+   osborne_bank_switch(reg_c);
+
    update_pc();
    // Update undocumented memptr register
    int bc = read_reg_pair1(ID_RR_BC);

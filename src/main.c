@@ -867,6 +867,15 @@ void decode_cycle(Z80CycleSummaryType *cycle_q) {
             // Run the emulation
             failflag = FAIL_NONE;
             z80_clear_mem_log();
+
+            // put fetched instructions into memory model
+            int pc = z80_get_pc();
+            if (pc >= 0) {
+	       for (int i = 0; i < instr_len; i++) {
+                  memory_read(instr_bytes[i], pc++);
+	       }
+            }
+
             if (instruction && instruction->emulate) {
                instruction->emulate(instruction);
             }

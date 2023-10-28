@@ -2,7 +2,8 @@
 
 LIBS="-lm"
 
-if [[ $OS = *"Windows"* ]]; then
+if [[ $OS = *"Windows"* || "$(uname)" == "Darwin" ]]
+then
   LIBS="$LIBS -largp"
 fi
 
